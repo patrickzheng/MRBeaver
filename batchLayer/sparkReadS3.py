@@ -1,5 +1,4 @@
-
-m pyspark import SparkContext
+from pyspark import SparkContext
 sc = SparkContext(appName="TestApp")
 
 from pyspark.sql import SQLContext
@@ -47,7 +46,32 @@ for i,line in enumerate(key.get_contents_as_string().splitlines()[:]):
 
 from pyspark.sql import SQLContext
 sqlContext = SQLContext(sc)
-qlContext.read.json("s3n://patricks3db/reviews_Movies_and_TV.json")
+df = sqlContext.read.json("s3n://patricks3db/reviews_Movies_and_TV.json")
+# df = sqlContext.read.json("s3n://patricks3db/meta_Movies_and_TV.json")
 # text_file = sc.textFile("s3n://patricks3db/reviews_Movies_and_TV.json")
-text_file = sc.textFile("s3n://patricks3db/meta_Movies_and_TV.json")
-text_file.map(lambda x: (x,1))
+# text_file = sc.textFile("s3n://patricks3db/meta_Movies_and_TV.json")
+# text_file.map(lambda x: (x,1))
+# reviewerSummary = df.map(lambda row: (row.reviewerID,[(row.asin, row.overall)])).collect()
+# reviewerSummaryRDD = df.map(lambda row: (row.reviewerID,list([(row.asin, row.overall), ]))).groupByKey()
+# reviewerSummary = reviewerSummaryRDD.map(lambda x: {"reviewerID":x[0], "reviewDetail":[tup for sublist in x[1] for tup in sublist]}).collect()
+# reviewerSummary = reviewerSummaryRDD.map(lambda x: {"reviewerID":x[0], "reviewDetail":{tup[0]:tup[1] for sublist in x[1] for tup in sublist}}).collect()
+reviewerSummaryRDD1 = df.map(lambda row: (row.reviewerID, {(row.asin, row.overall), }))
+reviewerSummaryRDD2 = reviewerSummaryRDD1.reduceByKey(lambda x, y: x | y)
+reviewerSummaryRDD3 = reviewerSummaryRDD2.map(lambda x: {"reviewerID":x[0], "reviews":{item[0]:item[1] for item in x[1]}})
+def AddToCassandra_allcountsbatch_bypartition(d_iter):
+	from cqlengine import columns
+	from cqlengine.models import Model
+	from cqlengine import connection
+	from cqlengine.management import sync_table
+	CASSANDRA_KEYSPACE = "playground"
+	class reviewerProfile(Model):
+		reviewerID = columns.Text(primary_key=True)
+		reviews = columns.Map(columns.Text, columns.Float)
+	connection.setup(['172.31.39.226'], CASSANDRA_KEYSPACE)
+	sync_table(reviewerProfile)
+	for d in d_iter:
+        	reviewerProfile.create(**d)
+
+# Create table if it does not exist. Need to do this before submitting to Spark to avoid collisions
+AddToCassandra_allcountsbatch_bypartition([])
+reviewerSummaryRDD3.foreachPartition(AddToCassandra_allcountsbatch_bypartition)
